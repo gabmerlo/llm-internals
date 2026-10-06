@@ -1,6 +1,5 @@
 import torch
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
-import torch.nn.functional as fu
 
 torch.set_grad_enabled(False)
 
@@ -41,7 +40,6 @@ def text_into_ids(text):
 
 embeddings = get_embeddings(texts)
 
-
 def comparar(tensor_1, tensor_2):
     diferencias = (tensor_1 - tensor_2).abs()
     diferencia_max = diferencias.max().item()
@@ -49,8 +47,6 @@ def comparar(tensor_1, tensor_2):
     print(f"Diferencia máxima: {diferencia_max}")
 
     torch.testing.assert_close(tensor_1, tensor_2,atol=1e-4, rtol= 1e-5 )
-
-
 
 #LayerNorm
 
@@ -62,6 +58,8 @@ def layernorm(tensor,weight,bias):
     output = ((tensor-mean)/torch.sqrt(variance+eps))* weight + bias
     return output
 
+#MLP Implementation
+import torch.nn.functional as fu
 
 def mlp(tensor, weight_1, bias_1, weight_2, bias_2):
     inter = tensor @ weight_1 + bias_1
@@ -70,11 +68,29 @@ def mlp(tensor, weight_1, bias_1, weight_2, bias_2):
 
     return output
 
-
-
 #Implementing the attention layer
 
+def decode_attention(q, kv_cache, layer, total_len):
+
+    n_heads = 12
+    head_dim = 768 // n_heads
+
+    k = kv_cache[layer, 0, :, :, :total_len , :]
+    v = kv_cache[layer, 1, :, :, :total_len , :]
+    q.unsqueeze(-2)
+
+    numerator = q @ k.transpose(-2,-1)
+    denominator = head_dim ** 0.5
+    inter_results = numerator/denominator
+
+    softmax_res = torch.softmax(inter_results, dim=-1)
+    output_1 = softmax_res @ v
+
+    return output_1
+
+
 def attention(tensor, kv_cache, layer, generated_len,  weight_1, bias_1, weight_2, bias_2):
+
     n_heads = 12
     head_dim = 768 // n_heads
     number_of_tokens = tensor.shape[1]
@@ -96,24 +112,28 @@ def attention(tensor, kv_cache, layer, generated_len,  weight_1, bias_1, weight_
     v = kv_cache[layer,1,:,:,:new_token_len,:]
 
 
-    numerator = q @ k.transpose(-2,-1)
-    denominator = head_dim ** 0.5
-    inter_results = numerator/denominator
     if number_of_tokens > 1:
+        numerator = q @ k.transpose(-2,-1)
+        denominator = head_dim ** 0.5
+        inter_results = numerator/denominator
         mask = torch.tril(torch.ones(k[0].shape[-2],k[0].shape[-2], device=tensor.device))
         inter_results = inter_results.masked_fill(mask==0, float("-inf"))
+        softmax_res = torch.softmax(inter_results, dim=-1)
+        output_1 = softmax_res @ v
+        output_1 = output_1.transpose(-3,-2)
+        output_1 = output_1.reshape(*output_1.shape[:-2],n_heads*head_dim)
+        output_2 = output_1@weight_2 + bias_2
 
-    softmax_res = torch.softmax(inter_results, dim=-1)
-    output_1 = softmax_res @ v
+        return output_2
 
+    output_1 = decode_attention(q, kv_cache, layer, new_token_len)
     output_1 = output_1.transpose(-3,-2)
     output_1 = output_1.reshape(*output_1.shape[:-2],n_heads*head_dim)
-
     output_2 = output_1@weight_2 + bias_2
 
     return output_2
 
-    #Full Block Implementation
+#Full Block Implementation
 
 def full_layer_block(tensor, kv_cache, layer, generated_len, w1, b1, w2, b2, w3, b3, w4, b4, w5, b5, w6, b6):
 
@@ -128,7 +148,6 @@ def full_layer_block(tensor, kv_cache, layer, generated_len, w1, b1, w2, b2, w3,
     res_2 = res_1 + inter_2
 
     return res_2
-
 
 def gpt2_model(input_ids, kv_cache, generated_len):
 
@@ -147,7 +166,7 @@ def gpt2_model(input_ids, kv_cache, generated_len):
 #My first generation implementation, and its greedy to make things easier for myself
 
 def greedy_generation(input_ids, num_tokens):
-    
+
     #Declaring my KV cache
     layers = 12
     num_heads = 12
@@ -155,13 +174,17 @@ def greedy_generation(input_ids, num_tokens):
     batch = input_ids.shape[0]
     max_len = 1024
 
+    #Head dim last, don't want trouble with coalescing
+
     kv_cache = torch.zeros(layers, 2, batch, num_heads, max_len, head_dim)
 
-    
+
 
     current_len = input_ids.shape[1]
-    
+
     calculated_logits = gpt2_model(input_ids,kv_cache, 0)
+
+
 
 
     for _ in range(num_tokens):
@@ -180,5 +203,11 @@ def greedy_generation(input_ids, num_tokens):
 
     return input_ids
 
+ids = text_into_ids("1234")
 
+greedy_generation(ids,15)
+
+my_answer = greedy_generation(ids, 20)
+official_answer = model.generate(ids, max_new_tokens=20, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+print(torch.equal(my_answer, official_answer))
 

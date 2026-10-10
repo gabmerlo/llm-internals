@@ -18,23 +18,10 @@ print(model.model.layers[0].mlp.gate_proj.weight.shape)
 texts = ["Hello, good morning"]
 
 
-def get_embeddings(input):
-    wte = model.embed_tokens.wte.weight
-    encoded = tokenizer(input, return_tensors="pt")
-    ids_input = encoded["input_ids"]
-    num_tokens = ids_input.shape[1]
-    positions = torch.arange(num_tokens)
-    embeddings = wpe[positions] + wte[ids_input]
 
-    return embeddings
-
-
-def embeddings_from_ids(ids, len_previous):
-    num_tokens = ids.shape[1]
-    positions = torch.arange(start=len_previous, end=len_previous+num_tokens ,device=ids.device)
-    wpe = model.transformer.wpe.weight
-    wte = model.transformer.wte.weight
-    embeddings = wpe[positions] + wte[ids]
+def embeddings_from_ids(ids):
+    wte = model.model.embed_tokens.weight
+    embeddings = wte[ids]
 
     return embeddings
 
@@ -43,7 +30,37 @@ def text_into_ids(text):
     ids = tokenizer.encode(text, return_tensors="pt")
     return ids.to(device)
 
-embeddings = get_embeddings(texts)
+
+#RoPE Implementation
+
+def rope(tensor, generated_len):
+
+    #Input has this shape: (batch, heads, seq, 64)
+    #We transform it in pairs into (batch, heads, seq, 2, 32)
+
+    pairs = tensor.view(*tensor[:-1],2,32)
+    pair_index = torch.arange(32, dtype=torch.float32, device=tensor.device)
+    rope_theta = 500000.0
+    speeds = 1 / (rope_theta**(pair_index/32))
+
+    #angles = position * speeds
+
+    num_tokens = tensor.shape[-2]
+    positions = torch.arange(generated_len, generated_len + seq, dtype=torch.float32, device=tensor.device)
+    angles = torch.outer(positions,speeds)
+
+    cos = torch.cos(angles)
+    sin = torch.sin(angles)
+
+    first_elements = pairs[:, :, :, 0, :]
+    second_elements = pairs[:, :, :, 1, :]
+
+    first_rotated = first_elements * cos - second_elements * sin
+    second_rotated = first_elements * sin + second_elements * cos
+
+    final_output = torch.cat([first_rotated, second_rotated], dim=-1)
+
+    return final_output
 
 def comparar(tensor_1, tensor_2):
     diferencias = (tensor_1 - tensor_2).abs()

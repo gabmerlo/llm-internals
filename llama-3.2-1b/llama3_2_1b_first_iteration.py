@@ -37,17 +37,33 @@ def rope(tensor, generated_len):
 
     #Input has this shape: (batch, heads, seq, 64)
     #We transform it in pairs into (batch, heads, seq, 2, 32)
+    original_embeddings = model.config.rope_parameters["original_max_position_embeddings"]
+    high_freq_factor = model.config.rope_parameters["high_freq_factor"]
+    low_freq_factor = model.config.rope_parameters["low_freq_factor"]
+    wavelen_high = original_embeddings/high_freq_factor
+    wavelen_low = original_embeddings/low_freq_factor
+    factor = model.config.rope_parameters["factor"]
 
     pairs = tensor.view(*tensor.shape[:-1],2,32)
     pair_index = torch.arange(32, dtype=torch.float32, device=tensor.device)
     rope_theta = 500000.0
     speeds = 1 / (rope_theta**(pair_index/32))
+    wavelens = (2*math.pi)/speeds
+
+    fast_pairs = wavelens  < wavelen_high
+    slow_pairs = wavelens > wavelen_low
+    middle = ~fast_pairs & ~slow_pairs
+    smooth = (original_embeddings/wavelens - low_freq_factor) / (high_freq_factor - low_freq_factor)
+    blended = (1 - smooth) * speeds / factor + smooth * speeds
+
+    new_speeds = torch.where(slow_pairs, speeds / factor, speeds)   
+    new_speeds = torch.where(middle, blended, new_speeds)           
 
     #angles = position * speeds
 
     num_tokens = tensor.shape[-2]
     positions = torch.arange(generated_len, generated_len + num_tokens, dtype=torch.float32, device=tensor.device)
-    angles = torch.outer(positions,speeds)
+    angles = torch.outer(positions, new_speeds) 
 
     cos = torch.cos(angles)
     sin = torch.sin(angles)
@@ -61,7 +77,7 @@ def rope(tensor, generated_len):
     final_output = torch.cat([first_rotated, second_rotated], dim=-1)
 
     return final_output
-    
+
 def comparar(tensor_1, tensor_2):
     diferencias = (tensor_1 - tensor_2).abs()
     diferencia_max = diferencias.max().item()

@@ -38,7 +38,7 @@ def rope(tensor, generated_len):
     #Input has this shape: (batch, heads, seq, 64)
     #We transform it in pairs into (batch, heads, seq, 2, 32)
 
-    pairs = tensor.view(*tensor[:-1],2,32)
+    pairs = tensor.view(*tensor.shape[:-1],2,32)
     pair_index = torch.arange(32, dtype=torch.float32, device=tensor.device)
     rope_theta = 500000.0
     speeds = 1 / (rope_theta**(pair_index/32))
@@ -46,7 +46,7 @@ def rope(tensor, generated_len):
     #angles = position * speeds
 
     num_tokens = tensor.shape[-2]
-    positions = torch.arange(generated_len, generated_len + seq, dtype=torch.float32, device=tensor.device)
+    positions = torch.arange(generated_len, generated_len + num_tokens, dtype=torch.float32, device=tensor.device)
     angles = torch.outer(positions,speeds)
 
     cos = torch.cos(angles)
@@ -61,7 +61,7 @@ def rope(tensor, generated_len):
     final_output = torch.cat([first_rotated, second_rotated], dim=-1)
 
     return final_output
-
+    
 def comparar(tensor_1, tensor_2):
     diferencias = (tensor_1 - tensor_2).abs()
     diferencia_max = diferencias.max().item()

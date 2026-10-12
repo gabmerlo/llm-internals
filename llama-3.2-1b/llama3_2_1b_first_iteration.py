@@ -1,6 +1,7 @@
 import torch
 from transformers import LlamaForCausalLM, AutoTokenizer
 import torch.nn.functional as fu
+import math
 
 device = torch.device("cuda")
 
@@ -11,7 +12,10 @@ tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
 model.to(device)
 model.eval()
 
-print(model.model.layers[0].mlp.gate_proj.weight.shape)
+config_llama = model.config
+config_llama
+
+config_llama.rope_parameters
 
 #Embeddings
 
@@ -56,14 +60,14 @@ def rope(tensor, generated_len):
     smooth = (original_embeddings/wavelens - low_freq_factor) / (high_freq_factor - low_freq_factor)
     blended = (1 - smooth) * speeds / factor + smooth * speeds
 
-    new_speeds = torch.where(slow_pairs, speeds / factor, speeds)   
-    new_speeds = torch.where(middle, blended, new_speeds)           
+    new_speeds = torch.where(slow_pairs, speeds / factor, speeds)
+    new_speeds = torch.where(middle, blended, new_speeds)
 
     #angles = position * speeds
 
     num_tokens = tensor.shape[-2]
     positions = torch.arange(generated_len, generated_len + num_tokens, dtype=torch.float32, device=tensor.device)
-    angles = torch.outer(positions, new_speeds) 
+    angles = torch.outer(positions, new_speeds)
 
     cos = torch.cos(angles)
     sin = torch.sin(angles)
@@ -106,8 +110,8 @@ def swiglu(tensor, gate_weights, up_weights, down_weights):
 
     return output
 
-#MLP Implementation
 
+#MLP Implementation
 def mlp(tensor, weight_1, bias_1, weight_2, bias_2):
     inter = tensor @ weight_1 + bias_1
     inter_2 = fu.gelu(inter, approximate="tanh")
@@ -137,21 +141,30 @@ def decode_attention(q, kv_cache, layer, total_len):
     return output_1
 
 
-def attention(tensor, kv_cache, layer, generated_len,  weight_1, bias_1, weight_2, bias_2):
+def attention(tensor, kv_cache, layer, generated_len,  q_proj, k_proj, v_proj, weight_out):
 
-    n_heads = 12
-    head_dim = 768 // n_heads
+    q_heads = model.config.num_attention_heads
+    kv_heads = model.config.num_key_value_heads
+    head_dim = model.config.head_dim
     number_of_tokens = tensor.shape[1]
 
-    q,k,v = ((tensor @ weight_1) + bias_1).split(768, dim=-1)
-    q = q.view(*q.shape[:-1],n_heads,head_dim)
+    q = (tensor @ q_proj.transpose(-2, -1))
+    q = q.view(*q.shape[:-1],q_heads,head_dim)
     q = q.transpose(-3,-2)
-    k = k.view(*k.shape[:-1],n_heads,head_dim)
-    k = k.transpose(-3,-2)
-    kv_cache[layer,0, :, :, generated_len:generated_len + number_of_tokens, :] = k
 
-    v = v.view(*v.shape[:-1],n_heads,head_dim)
+    k = (tensor @ k_proj.transpose(-2, -1))
+    k = k.view(*k.shape[:-1],kv_heads,head_dim)
+    k = k.transpose(-3,-2)
+
+    v = (tensor @ v_proj.transpose(-2, -1))
+    v = v.view(*v.shape[:-1],kv_heads,head_dim)
     v = v.transpose(-3,-2)
+
+    #Applying RoPE
+    q = rope(q, generated_len)
+    k = rope(k, generated_len)
+
+    kv_cache[layer,0, :, :, generated_len:generated_len + number_of_tokens, :] = k
     kv_cache[layer,1, :, :, generated_len:generated_len + number_of_tokens, :] = v
 
 
@@ -168,8 +181,8 @@ def attention(tensor, kv_cache, layer, generated_len,  weight_1, bias_1, weight_
         softmax_res = torch.softmax(inter_results, dim=-1)
         output_1 = softmax_res @ v
         output_1 = output_1.transpose(-3,-2)
-        output_1 = output_1.reshape(*output_1.shape[:-2],n_heads*head_dim)
-        output_2 = output_1@weight_2 + bias_2
+        output_1 = output_1.reshape(*output_1.shape[:-2],q_heads*head_dim)
+        output_2 = output_1@weight_out
 
 
 
@@ -179,7 +192,7 @@ def attention(tensor, kv_cache, layer, generated_len,  weight_1, bias_1, weight_
     output_1 = output_1.transpose(-3,-2)
     output_1 = output_1.reshape(*output_1.shape[:-2],n_heads*head_dim)
 
-    output_2 = output_1@weight_2 + bias_2
+    output_2 = output_1@weight_out.transpose(-2, -1)
 
 
     return output_2
@@ -214,22 +227,6 @@ def gpt2_model(input_ids, kv_cache, generated_len):
 
     return output
 
-def measure(fn, warmup=10, iters=50):
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    times = []
-    for _ in range(iters):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        times.append(start.elapsed_time(end))
-    times.sort()
-    return times[len(times) // 2]
-
 #My first generation implementation, and its greedy to make things easier for myself
 
 def greedy_generation(input_ids, num_tokens):
@@ -243,7 +240,7 @@ def greedy_generation(input_ids, num_tokens):
 
     #Head dim last, don't want trouble with coalescing
 
-    kv_cache = torch.zeros(layers, 2, batch, num_heads, max_len, head_dim, device=device)
+    kv_cache = torch.zeros(layers, 2, batch, num_heads // 4, max_len, head_dim, device=device)
 
 
     current_len = input_ids.shape[1]

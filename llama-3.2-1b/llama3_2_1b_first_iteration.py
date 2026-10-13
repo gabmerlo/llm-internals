@@ -1,3 +1,4 @@
+
 import torch
 from transformers import LlamaForCausalLM, AutoTokenizer
 import torch.nn.functional as fu
@@ -124,11 +125,15 @@ def mlp(tensor, weight_1, bias_1, weight_2, bias_2):
 
 def decode_attention(q, kv_cache, layer, total_len):
 
-    n_heads = 12
-    head_dim = 768 // n_heads
+    q_heads = model.config.num_attention_heads
+    kv_heads = model.config.num_key_value_heads
+    head_dim = model.config.head_dim
 
     k = kv_cache[layer, 0, :, :, :total_len , :]
     v = kv_cache[layer, 1, :, :, :total_len , :]
+
+    k = torch.repeat_interleave(k, q_heads // kv_heads, dim=1)
+    v = torch.repeat_interleave(v, q_heads // kv_heads, dim=1)
 
     numerator = q @ k.transpose(-2,-1)
 
@@ -173,6 +178,10 @@ def attention(tensor, kv_cache, layer, generated_len,  q_proj, k_proj, v_proj, w
     v = kv_cache[layer,1,:,:,:new_token_len,:]
 
     if number_of_tokens > 1:
+
+        k = torch.repeat_interleave(k, q_heads // kv_heads, dim=1)
+        v = torch.repeat_interleave(v, q_heads // kv_heads, dim=1)
+
         numerator = q @ k.transpose(-2,-1)
         denominator = head_dim ** 0.5
         inter_results = numerator/denominator
@@ -182,7 +191,7 @@ def attention(tensor, kv_cache, layer, generated_len,  q_proj, k_proj, v_proj, w
         output_1 = softmax_res @ v
         output_1 = output_1.transpose(-3,-2)
         output_1 = output_1.reshape(*output_1.shape[:-2],q_heads*head_dim)
-        output_2 = output_1@weight_out
+        output_2 = output_1@weight_out.transpose(-2,-1)
 
 
 
@@ -190,7 +199,7 @@ def attention(tensor, kv_cache, layer, generated_len,  q_proj, k_proj, v_proj, w
 
     output_1 = decode_attention(q, kv_cache, layer, new_token_len)
     output_1 = output_1.transpose(-3,-2)
-    output_1 = output_1.reshape(*output_1.shape[:-2],n_heads*head_dim)
+    output_1 = output_1.reshape(*output_1.shape[:-2],q_heads*head_dim)
 
     output_2 = output_1@weight_out.transpose(-2, -1)
 
@@ -233,8 +242,8 @@ def greedy_generation(input_ids, num_tokens):
 
     #Declaring my KV cache
     layers = 12
-    num_heads = 12
-    head_dim = 768 // 12
+    num_heads = 32
+    head_dim = 2048 // num_heads
     batch = input_ids.shape[0]
     max_len = 1024
 

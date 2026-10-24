@@ -1,4 +1,3 @@
-
 import torch
 from transformers import LlamaForCausalLM, AutoTokenizer
 import torch.nn.functional as fu
@@ -102,22 +101,12 @@ def rmsnorm(tensor,weight):
 
 #SwiGLU Implementation
 
-def swiglu(tensor, gate_weights, up_weights, down_weights):
+def mlp_swiglu(tensor, gate_weights, up_weights, down_weights):
     gated = tensor @ gate_weights.transpose(-2,-1)
     up = tensor @ up_weights.transpose(-2,-1)
     silu = fu.silu(gated)
     inter = up * silu
     output = inter @ down_weights.transpose(-2,-1)
-
-    return output
-
-
-#MLP Implementation
-def mlp(tensor, weight_1, bias_1, weight_2, bias_2):
-    inter = tensor @ weight_1 + bias_1
-    inter_2 = fu.gelu(inter, approximate="tanh")
-    output = inter_2 @ weight_2 + bias_2
-
 
     return output
 
@@ -206,17 +195,19 @@ def attention(tensor, kv_cache, layer, generated_len,  q_proj, k_proj, v_proj, w
 
     return output_2
 
+print(model)
+
 #Full Block Implementation
 
-def full_layer_block(tensor, kv_cache, layer, generated_len, w1, b1, w2, b2, w3, b3, w4, b4, w5, b5, w6, b6):
+def full_layer_block(tensor, kv_cache, layer, generated_len, w_rms_1, w_q_proj, w_k_proj, w_v_proj, w_out, w_rms_2, w_gate, w_up, w_down):
 
-    inter_1 = layernorm(tensor,w1,b1)
-    inter_1 = attention(inter_1,kv_cache, layer, generated_len, w2,b2,w3,b3)
+    inter_1 = rmsnorm(tensor,w_rms_1)
+    inter_1 = attention(inter_1,kv_cache, layer, generated_len, w_q_proj, w_k_proj, w_v_proj, w_out)
 
     res_1 = tensor + inter_1
 
-    inter_2 = layernorm(res_1,w4,b4)
-    inter_2 = mlp(inter_2,w5,b5,w6,b6)
+    inter_2 = rmsnorm(res_1,w_rms_2)
+    inter_2 = mlp_swiglu(inter_2,w_gate,w_up,w_down)
 
 
     res_2 = res_1 + inter_2
@@ -226,11 +217,12 @@ def full_layer_block(tensor, kv_cache, layer, generated_len, w1, b1, w2, b2, w3,
 def gpt2_model(input_ids, kv_cache, generated_len):
 
 
-    embeddings = embeddings_from_ids(input_ids, generated_len)
-    for layer in range (12):
-        embeddings = full_layer_block(embeddings, kv_cache, layer, generated_len, model.transformer.h[layer].ln_1.weight,model.transformer.h[layer].ln_1.bias, model.transformer.h[layer].attn.c_attn.weight, model.transformer.h[layer].attn.c_attn.bias, model.transformer.h[layer].attn.c_proj.weight, model.transformer.h[layer].attn.c_proj.bias,model.transformer.h[layer].ln_2.weight, model.transformer.h[layer].ln_2.bias, model.transformer.h[layer].mlp.c_fc.weight, model.transformer.h[layer].mlp.c_fc.bias, model.transformer.h[layer].mlp.c_proj.weight, model.transformer.h[layer].mlp.c_proj.bias)
+    embeddings = embeddings_from_ids(input_ids)
+    for layer in range (16):
+        model_layer = model.model.layers[layer]
+        embeddings = full_layer_block(embeddings, kv_cache, layer, generated_len, model_layer.input_layernorm.weight, model_layer.self_attn.q_proj.weight, model_layer.self_attn.k_proj.weight, model_layer.self_attn.v_proj.weight, model_layer.self_attn.o_proj.weight,model_layer.post_attention_layernorm.weight, model_layer.mlp.gate_proj.weight, model_layer.mlp.up_proj.weight, model_layer.mlp.down_proj.weight)
 
-    embeddings = layernorm(embeddings, model.transformer.ln_f.weight, model.transformer.ln_f.bias)
+    embeddings = rmsnorm(embeddings, model.model.norm.weight)
 
     output = embeddings @ model.lm_head.weight.transpose(-2,-1)
 
@@ -241,11 +233,11 @@ def gpt2_model(input_ids, kv_cache, generated_len):
 def greedy_generation(input_ids, num_tokens):
 
     #Declaring my KV cache
-    layers = 12
+    layers = 16
     num_heads = 32
     head_dim = 2048 // num_heads
     batch = input_ids.shape[0]
-    max_len = 1024
+    max_len = 8192
 
     #Head dim last, don't want trouble with coalescing
 
@@ -275,7 +267,7 @@ def greedy_generation(input_ids, num_tokens):
 
     return input_ids
 
-ids = text_into_ids("i")
+ids = text_into_ids("How ")
 greedy_generation(ids,15)
 
 my_answer = greedy_generation(ids, 20)

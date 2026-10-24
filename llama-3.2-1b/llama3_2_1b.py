@@ -214,7 +214,7 @@ def full_layer_block(tensor, kv_cache, layer, generated_len, w_rms_1, w_q_proj, 
 
     return res_2
 
-def gpt2_model(input_ids, kv_cache, generated_len):
+def llama_model(input_ids, kv_cache, generated_len):
 
 
     embeddings = embeddings_from_ids(input_ids)
@@ -246,7 +246,7 @@ def greedy_generation(input_ids, num_tokens):
 
     current_len = input_ids.shape[1]
 
-    calculated_logits = gpt2_model(input_ids,kv_cache, 0)
+    calculated_logits = llama_model(input_ids,kv_cache, 0)
 
 
 
@@ -259,7 +259,7 @@ def greedy_generation(input_ids, num_tokens):
 
         input_ids = torch.cat([input_ids, logit_pos.unsqueeze(-1)], dim=-1)
 
-        calculated_logits = gpt2_model(logit_pos.unsqueeze(-1), kv_cache, current_len)
+        calculated_logits = llama_model(logit_pos.unsqueeze(-1), kv_cache, current_len)
 
         current_len += 1
 
@@ -273,3 +273,9 @@ greedy_generation(ids,15)
 my_answer = greedy_generation(ids, 20)
 official_answer = model.generate(ids, max_new_tokens=20, do_sample=False, pad_token_id=tokenizer.eos_token_id)
 print(torch.equal(my_answer, official_answer))
+
+#Logits tests
+kv_cache = torch.zeros(16, 2, ids.shape[0], 32 // 4, 8192, 2048 // 32, device=device)
+mi_modelo = llama_model(ids,kv_cache,0)
+llama_hf = model(ids).logits
+comparar(mi_modelo, llama_hf)

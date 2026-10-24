@@ -112,25 +112,25 @@ def mlp_swiglu(tensor, gate_weights, up_weights, down_weights):
 
 #Implementing the attention layer
 
-def decode_attention(q, kv_cache, layer, total_len):
+def decode_attention(q, k_cache, v_cache, seq_len):
 
     q_heads = model.config.num_attention_heads
     kv_heads = model.config.num_key_value_heads
     head_dim = model.config.head_dim
 
-    k = kv_cache[layer, 0, :, :, :total_len , :]
-    v = kv_cache[layer, 1, :, :, :total_len , :]
+    k = k_cache[:, :, :seq_len , :]
+    v = v_cache[:, :, :seq_len , :]
 
     k = torch.repeat_interleave(k, q_heads // kv_heads, dim=1)
     v = torch.repeat_interleave(v, q_heads // kv_heads, dim=1)
 
-    numerator = q @ k.transpose(-2,-1)
+    numerator = (q.unsqueeze(2) @ k.transpose(-2,-1)).squeeze(2)
 
     denominator = head_dim ** 0.5
     inter_results = numerator/denominator
 
     softmax_res = torch.softmax(inter_results, dim=-1)
-    output_1 = softmax_res @ v
+    output_1 = (softmax_res.unsqueeze(2) @ v).squeeze(2)
 
     return output_1
 
@@ -186,7 +186,8 @@ def attention(tensor, kv_cache, layer, generated_len,  q_proj, k_proj, v_proj, w
 
         return output_2
 
-    output_1 = decode_attention(q, kv_cache, layer, new_token_len)
+    output_1 = decode_attention(q[:,:,0,:], kv_cache[layer,0] ,kv_cache[layer,1] , new_token_len)
+    output_1 = output_1.unsqueeze(2)
     output_1 = output_1.transpose(-3,-2)
     output_1 = output_1.reshape(*output_1.shape[:-2],q_heads*head_dim)
 

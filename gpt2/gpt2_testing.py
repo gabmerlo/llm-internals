@@ -17,4 +17,4 @@ greedy_generation(ids,15)
 
 my_answer = greedy_generation(ids, 20)
 gpt2_official_generation = model.generate(ids, max_new_tokens=20, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-print(torch.equal(mine, hf))
+print(torch.equal(my_answer, gpt2_official_generation))
